@@ -1,0 +1,16 @@
+# Flutter / Dart
+.dart_tool/
+.packages
+.pub-cache/
+build/
+*.log
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# IDE ve sistem
+.idea/
+.vscode/
+.DS_Store
+
+# Yerel ayar dosyası (CI bunu kendi üretir)
+lib/ayarlar.dart

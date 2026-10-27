@@ -1,0 +1,589 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:archive/archive.dart';
+import 'package:file_saver/file_saver.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
+
+String _tarih(DateTime d) =>
+    '${d.day.toString().padLeft(2, '0')}.${d.month.toString().padLeft(2, '0')}.${d.year}';
+
+String _buyuk(String s) => s.replaceAll('i', 'İ').replaceAll('ı', 'I').toUpperCase();
+
+String _x(String s) => s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+
+String _ascii(String s) {
+  const a = 'çğıöşüÇĞİÖŞÜ', b = 'cgiosuCGIOSU';
+  var r = s;
+  for (var i = 0; i < a.length; i++) {
+    r = r.replaceAll(a[i], b[i]);
+  }
+  return r.replaceAll(RegExp(r'[^A-Za-z0-9]+'), '_');
+}
+
+/// Bir izin dönemi için formda yazacak her şey.
+class IzinFormu {
+  final String ad, soyad, tc, bolum;
+  final DateTime giris, baslangic, bitis; // bitis = izinli son gün
+  final int gun;
+  IzinFormu({
+    required this.ad,
+    required this.soyad,
+    required this.tc,
+    required this.bolum,
+    required this.giris,
+    required this.baslangic,
+    required this.bitis,
+    required this.gun,
+  });
+
+  DateTime get isBasi => DateTime(bitis.year, bitis.month, bitis.day + 1);
+  String get adSoyad => _buyuk('$ad $soyad'.trim());
+  String get dosyaAdi => 'yillik_izin_${_ascii('$ad $soyad')}_${_tarih(baslangic).replaceAll('.', '-')}_${gun}gun';
+
+  List<(String, String)> get ustSatirlar => [
+        ('TARİH', _tarih(baslangic)),
+        ('ADI', _buyuk(ad)),
+        ('SOYADI', _buyuk(soyad)),
+        ('TC KİMLİK NUMARASI', tc),
+        ('İŞE GİRİŞ TARİHİ', _tarih(giris)),
+        ('ÇALIŞTIĞI BÖLÜM', _buyuk(bolum)),
+        ('İKAMETGAH ADRESİ', ''),
+        ('SABİT TELEFON NO', ''),
+        ('GSM TELEFON NO', ''),
+        ('İZİNİ GEÇİRECEĞİ ADRES VE TELEFON', ''),
+        ('İSTENEN ÜCRETSİZ YOL İZNİ SÜRESİ', ''),
+      ];
+
+  String get dilekce =>
+      '    4857 Sayılı yasanın 53 üncü maddesine göre ${baslangic.year} yılına ilişkin yıllık iznimi '
+      '${_tarih(baslangic)}-${_tarih(isBasi)} tarihleri arasında kullanmak istiyorum. '
+      'Gereğinin yapılmasını arz ederim.';
+
+  List<(String, String)> get altSatirlar => [
+        ('İZİNE ÇIKIŞ TARİHİ', _tarih(baslangic)),
+        ('YILLIK ÜCRETLİ İZİN SÜRESİ', '$gun'),
+        ('HAFTA TATİLİ', ''),
+        ('ULUSAL VE RESMİ TATİL GÜNÜ', ''),
+        ('MAZERET İZNİ', ''),
+        ('ÜCRETSİZ YOL İZNİ', ''),
+        ('ÜCRETSİZ İZİN', ''),
+        ('TOPLAM İZİN SÜRESİ', '$gun'),
+        ('ÜCRET AVANSI', ''),
+        ('İŞ BAŞI TARİHİ', _tarih(isBasi)),
+      ];
+
+  String get onay =>
+      'Çalışanımızın, ${_tarih(baslangic)} tarihi ile ${_tarih(isBasi)} tarihleri arasında '
+      'yıllık ücretli iznini kullanması uygundur.';
+}
+
+const _baslik = 'YILLIK ÜCRETLİ İZİN TALEP FORMU';
+const _personelBolumu = '*** PERSONEL BÖLÜMÜ TARAFINDAN DOLDURULACAKTIR ***';
+const _hesapBaslik = 'YILLIK ÜCRETLİ İZİN HESABI';
+
+/// tur: 'pdf', 'docx' veya 'xlsx'
+Future<void> izinFormuIndir(IzinFormu f, String tur) async {
+  final Uint8List veri = switch (tur) {
+    'pdf' => await _pdf(f),
+    'docx' => _docx(f),
+    _ => _xlsx(f),
+  };
+  final dynamic fs = FileSaver.instance;
+  try {
+    await fs.saveFile(name: f.dosyaAdi, bytes: veri, fileExtension: tur, mimeType: MimeType.other);
+  } on NoSuchMethodError {
+    await fs.saveFile(name: f.dosyaAdi, bytes: veri, ext: tur, mimeType: MimeType.other);
+  }
+}
+
+// ---------------------------------------------------------------- PDF
+
+Future<Uint8List> _pdf(IzinFormu f) async {
+  final doc = pw.Document(
+    theme: pw.ThemeData.withFont(
+      base: await PdfGoogleFonts.notoSansRegular(),
+      bold: await PdfGoogleFonts.notoSansBold(),
+    ),
+  );
+
+  pw.Widget t(String s, {bool kalin = false, double boyut = 9.5, pw.TextAlign? hiza}) => pw.Text(
+        s,
+        textAlign: hiza,
+        style: pw.TextStyle(fontSize: boyut, fontWeight: kalin ? pw.FontWeight.bold : pw.FontWeight.normal),
+      );
+
+  pw.Widget satir(String e, String d) => pw.Padding(
+        padding: const pw.EdgeInsets.symmetric(vertical: 3),
+        child: pw.Row(crossAxisAlignment: pw.CrossAxisAlignment.end, children: [
+          pw.SizedBox(width: 190, child: t(e)),
+          pw.SizedBox(width: 14, child: t(':')),
+          pw.Expanded(
+            child: pw.Container(
+              decoration: pw.BoxDecoration(
+                border: pw.Border(bottom: pw.BorderSide(width: 0.5, color: PdfColors.grey600)),
+              ),
+              child: t(d.isEmpty ? ' ' : d),
+            ),
+          ),
+        ]),
+      );
+
+  pw.Widget imza(String ad) => pw.Align(
+        alignment: pw.Alignment.centerRight,
+        child: pw.Container(
+          width: 190,
+          child: pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
+            if (ad == f.adSoyad) t('Saygılarımla,'),
+            pw.SizedBox(height: 3),
+            t(ad),
+            pw.SizedBox(height: 3),
+            t('İmza'),
+            pw.SizedBox(height: 26),
+          ]),
+        ),
+      );
+
+  doc.addPage(
+    pw.MultiPage(
+      pageFormat: PdfPageFormat.a4,
+      margin: const pw.EdgeInsets.fromLTRB(48, 40, 48, 40),
+      build: (ctx) => [
+        pw.Center(child: t(_baslik, kalin: true, boyut: 12)),
+        pw.SizedBox(height: 14),
+        for (final (e, d) in f.ustSatirlar) satir(e, d),
+        pw.SizedBox(height: 12),
+        t(f.dilekce, hiza: pw.TextAlign.justify),
+        pw.SizedBox(height: 14),
+        imza(f.adSoyad),
+        pw.Divider(thickness: 0.7),
+        pw.SizedBox(height: 6),
+        pw.Center(child: t(_personelBolumu, kalin: true)),
+        pw.SizedBox(height: 4),
+        pw.Center(child: t(_hesapBaslik, kalin: true)),
+        pw.SizedBox(height: 8),
+        for (final (e, d) in f.altSatirlar) satir(e, d),
+        pw.SizedBox(height: 12),
+        t(f.onay, hiza: pw.TextAlign.justify),
+        pw.SizedBox(height: 14),
+        imza('Adı, Soyad'),
+      ],
+    ),
+  );
+  return doc.save();
+}
+
+// ---------------------------------------------------------------- ZIP
+
+Uint8List _zip(Map<String, String> dosyalar) {
+  final arsiv = Archive();
+  dosyalar.forEach((ad, icerik) {
+    final b = utf8.encode(icerik);
+    arsiv.addFile(ArchiveFile(ad, b.length, b));
+  });
+  return Uint8List.fromList(ZipEncoder().encode(arsiv)!);
+}
+
+const _xmlBas = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+
+// ---------------------------------------------------------------- WORD
+
+const _docxTipler = r'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>''';
+
+const _docxKok = r'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>''';
+
+String _dp(String metin, {bool kalin = false, String hiza = 'left', int boyut = 19}) =>
+    '<w:p><w:pPr><w:spacing w:before="40" w:after="40"/><w:jc w:val="$hiza"/></w:pPr><w:r><w:rPr>'
+    '<w:rFonts w:ascii="Verdana" w:hAnsi="Verdana" w:cs="Verdana"/>${kalin ? '<w:b/>' : ''}<w:sz w:val="$boyut"/>'
+    '</w:rPr><w:t xml:space="preserve">${_x(metin)}</w:t></w:r></w:p>';
+
+String _dh(int w, String icerik, {bool alt = false}) =>
+    '<w:tc><w:tcPr><w:tcW w:w="$w" w:type="dxa"/>'
+    '${alt ? '<w:tcBorders><w:bottom w:val="single" w:sz="4" w:space="0" w:color="999999"/></w:tcBorders>' : ''}'
+    '</w:tcPr>$icerik</w:tc>';
+
+String _dtablo(List<(String, String)> satirlar) {
+  final s = StringBuffer(
+      '<w:tbl><w:tblPr><w:tblW w:w="9800" w:type="dxa"/><w:tblLayout w:type="fixed"/></w:tblPr>'
+      '<w:tblGrid><w:gridCol w:w="3900"/><w:gridCol w:w="300"/><w:gridCol w:w="5600"/></w:tblGrid>');
+  for (final (e, d) in satirlar) {
+    s.write('<w:tr>${_dh(3900, _dp(e))}${_dh(300, _dp(':'))}${_dh(5600, _dp(d), alt: true)}</w:tr>');
+  }
+  s.write('</w:tbl>');
+  return s.toString();
+}
+
+Uint8List _docx(IzinFormu f) {
+  final g = StringBuffer()
+    ..write(_dp(_baslik, kalin: true, hiza: 'center', boyut: 22))
+    ..write(_dp(''))
+    ..write(_dtablo(f.ustSatirlar))
+    ..write(_dp(''))
+    ..write(_dp(f.dilekce, hiza: 'both'))
+    ..write(_dp(''))
+    ..write(_dp('Saygılarımla,', hiza: 'right'))
+    ..write(_dp(f.adSoyad, hiza: 'right'))
+    ..write(_dp('İmza', hiza: 'right'))
+    ..write(_dp(''))
+    ..write(_dp(_personelBolumu, kalin: true, hiza: 'center'))
+    ..write(_dp(_hesapBaslik, kalin: true, hiza: 'center'))
+    ..write(_dtablo(f.altSatirlar))
+    ..write(_dp(''))
+    ..write(_dp(f.onay, hiza: 'both'))
+    ..write(_dp(''))
+    ..write(_dp('Adı, Soyad', hiza: 'right'))
+    ..write(_dp('İmza', hiza: 'right'));
+  final belge = '$_xmlBas<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>'
+      '$g<w:sectPr><w:pgSz w:w="11906" w:h="16838"/>'
+      '<w:pgMar w:top="720" w:right="1000" w:bottom="720" w:left="1000" w:header="708" w:footer="708" w:gutter="0"/>'
+      '</w:sectPr></w:body></w:document>';
+  return _zip({
+    '[Content_Types].xml': _docxTipler,
+    '_rels/.rels': _docxKok,
+    'word/document.xml': belge,
+  });
+}
+
+// ---------------------------------------------------------------- EXCEL
+
+const _xlsxTipler = r'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>''';
+
+const _xlsxKok = r'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>''';
+
+const _xlsxKitap = r'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="İzin Formu" sheetId="1" r:id="rId1"/></sheets></workbook>''';
+
+const _xlsxKitapBag = r'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>''';
+
+// Stiller: 0 normal, 1 kalın+ortalı, 2 alt çizgili değer hücresi, 3 kaydırmalı metin, 4 kalın
+const _xlsxStiller = r'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="10"/><name val="Verdana"/></font><font><b/><sz val="10"/><name val="Verdana"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left/><right/><top/><bottom style="thin"><color rgb="FF999999"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="5"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment horizontal="center"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1"/><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>''';
+
+Uint8List _xlsx(IzinFormu f) {
+  final sat = StringBuffer();
+  final birlestir = <String>[];
+  var r = 0;
+
+  String h(String ref, String metin, int stil) => metin.isEmpty
+      ? '<c r="$ref" s="$stil"/>'
+      : '<c r="$ref" s="$stil" t="inlineStr"><is><t xml:space="preserve">${_x(metin)}</t></is></c>';
+
+  void satir(String icerik, {double? yukseklik}) {
+    r++;
+    sat.write('<row r="$r"${yukseklik == null ? '' : ' ht="$yukseklik" customHeight="1"'}>$icerik</row>');
+  }
+
+  void bos() => satir('');
+  void birlesik(String metin, int stil, {double? yukseklik}) {
+    satir(h('A${r + 1}', metin, stil) + h('B${r + 1}', '', stil) + h('C${r + 1}', '', stil), yukseklik: yukseklik);
+    birlestir.add('A$r:C$r');
+  }
+
+  void alan(String e, String d) => satir(h('A${r + 1}', e, 0) + h('B${r + 1}', ':', 0) + h('C${r + 1}', d, 2));
+  void sag(String m) => satir(h('C${r + 1}', m, 0));
+
+  birlesik(_baslik, 1);
+  bos();
+  for (final (e, d) in f.ustSatirlar) {
+    alan(e, d);
+  }
+  bos();
+  birlesik(f.dilekce, 3, yukseklik: 54);
+  bos();
+  sag('Saygılarımla,');
+  sag(f.adSoyad);
+  sag('İmza');
+  bos();
+  bos();
+  birlesik(_personelBolumu, 1);
+  birlesik(_hesapBaslik, 1);
+  for (final (e, d) in f.altSatirlar) {
+    alan(e, d);
+  }
+  bos();
+  birlesik(f.onay, 3, yukseklik: 42);
+  bos();
+  sag('Adı, Soyad');
+  sag('İmza');
+
+  final birlesimler = birlestir.map((m) => '<mergeCell ref="$m"/>').join();
+  final sayfa = '$_xmlBas<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+      '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>'
+      '<sheetViews><sheetView showGridLines="0" workbookViewId="0"/></sheetViews>'
+      '<sheetFormatPr defaultRowHeight="16"/>'
+      '<cols><col min="1" max="1" width="40" customWidth="1"/><col min="2" max="2" width="3" customWidth="1"/>'
+      '<col min="3" max="3" width="46" customWidth="1"/></cols>'
+      '<sheetData>$sat</sheetData>'
+      '<mergeCells count="${birlestir.length}">$birlesimler</mergeCells>'
+      '<pageMargins left="0.6" right="0.6" top="0.6" bottom="0.6" header="0.3" footer="0.3"/>'
+      '<pageSetup paperSize="9" orientation="portrait" fitToWidth="1" fitToHeight="1"/>'
+      '</worksheet>';
+
+  return _zip({
+    '[Content_Types].xml': _xlsxTipler,
+    '_rels/.rels': _xlsxKok,
+    'xl/workbook.xml': _xlsxKitap,
+    'xl/_rels/workbook.xml.rels': _xlsxKitapBag,
+    'xl/styles.xml': _xlsxStiller,
+    'xl/worksheets/sheet1.xml': sayfa,
+  });
+}
+
+// ===================================================================== ÜCRETSİZ İZİN DİLEKÇESİ
+
+class UcretsizIzinDilekcesi {
+  final String isveren, adSoyad, tc, bolum;
+  final DateTime giris, baslangic, bitis; // bitis = işe gelinmeyen son gün
+  final int gun;
+  UcretsizIzinDilekcesi({
+    required this.isveren,
+    required this.adSoyad,
+    required this.tc,
+    required this.bolum,
+    required this.giris,
+    required this.baslangic,
+    required this.bitis,
+    required this.gun,
+  });
+
+  factory UcretsizIzinDilekcesi.formdan(IzinFormu f, String isveren) => UcretsizIzinDilekcesi(
+        isveren: isveren,
+        adSoyad: '${f.ad} ${f.soyad}'.trim(),
+        tc: f.tc,
+        bolum: f.bolum,
+        giris: f.giris,
+        baslangic: f.baslangic,
+        bitis: f.bitis,
+        gun: f.gun,
+      );
+
+  String get baslik => 'ÜCRETSİZ İZİN TALEP DİLEKÇESİ';
+  String get adSoyadBuyuk => _buyuk(adSoyad);
+  String get makam => isveren.isEmpty ? 'İŞVEREN MAKAMINA' : '${_buyuk(isveren)} İŞVEREN MAKAMINA';
+  String get tarihMetni => baslangic == bitis ? _tarih(baslangic) : '${_tarih(baslangic)} - ${_tarih(bitis)}';
+  String get dosyaAdi => 'ucretsiz_izin_dilekcesi_${_ascii(adSoyad)}_${_tarih(baslangic).replaceAll('.', '-')}_${gun}gun';
+
+  List<(String, String)> get bilgiSatirlari => [
+        ('AD SOYAD', adSoyadBuyuk),
+        ('TC KİMLİK NO', tc),
+        ('İŞE GİRİŞ TARİHİ', _tarih(giris)),
+        ('BÖLÜM', _buyuk(bolum)),
+        ('İŞE GELİNMEYEN GÜNLER', '$tarihMetni ($gun gün)'),
+      ];
+
+  String get girisCumlesi {
+    final yer = isveren.isEmpty ? 'İşyerinizde' : '$isveren işyerinde';
+    final bol = bolum.isEmpty ? '' : ' ${_buyuk(bolum)} bölümünde';
+    return '    $yer$bol ${_tarih(giris)} tarihinden beri çalışmaktayım.';
+  }
+
+  String get talepCumlesi {
+    final aralik = baslangic == bitis
+        ? '${_tarih(baslangic)} tarihinde'
+        : '${_tarih(baslangic)} - ${_tarih(bitis)} tarihleri arasında';
+    return '    $aralik toplam $gun gün işe gelemedim. Söz konusu günlerin ücretsiz izin olarak kabul edilmesini, '
+        'bu günler için ücret ödenmemesini ve gereğinin yapılmasını arz ederim.';
+  }
+
+  String get onayMetni => 'Çalışanın $tarihMetni tarihlerindeki $gun günlük talebi, ücretsiz izin olarak kabul edilmiştir.';
+}
+
+/// tur: 'pdf', 'docx' veya 'xlsx'
+Future<void> ucretsizIzinIndir(UcretsizIzinDilekcesi d, String tur) async {
+  final Uint8List veri = switch (tur) {
+    'pdf' => await _dilekcePdf(d),
+    'docx' => _dilekceDocx(d),
+    _ => _dilekceXlsx(d),
+  };
+  final dynamic fs = FileSaver.instance;
+  try {
+    await fs.saveFile(name: d.dosyaAdi, bytes: veri, fileExtension: tur, mimeType: MimeType.other);
+  } on NoSuchMethodError {
+    await fs.saveFile(name: d.dosyaAdi, bytes: veri, ext: tur, mimeType: MimeType.other);
+  }
+}
+
+Future<Uint8List> _dilekcePdf(UcretsizIzinDilekcesi d) async {
+  final doc = pw.Document(
+    theme: pw.ThemeData.withFont(
+      base: await PdfGoogleFonts.notoSansRegular(),
+      bold: await PdfGoogleFonts.notoSansBold(),
+    ),
+  );
+
+  pw.Widget t(String s, {bool kalin = false, double boyut = 10.5, pw.TextAlign? hiza}) => pw.Text(
+        s,
+        textAlign: hiza,
+        style: pw.TextStyle(fontSize: boyut, fontWeight: kalin ? pw.FontWeight.bold : pw.FontWeight.normal),
+      );
+
+  pw.Widget satir(String e, String v) => pw.Padding(
+        padding: const pw.EdgeInsets.symmetric(vertical: 3),
+        child: pw.Row(crossAxisAlignment: pw.CrossAxisAlignment.end, children: [
+          pw.SizedBox(width: 150, child: t(e)),
+          pw.SizedBox(width: 14, child: t(':')),
+          pw.Expanded(
+            child: pw.Container(
+              decoration: pw.BoxDecoration(
+                border: pw.Border(bottom: pw.BorderSide(width: 0.5, color: PdfColors.grey600)),
+              ),
+              child: t(v.isEmpty ? ' ' : v),
+            ),
+          ),
+        ]),
+      );
+
+  pw.Widget imza(List<String> satirlar) => pw.Align(
+        alignment: pw.Alignment.centerRight,
+        child: pw.Container(
+          width: 200,
+          child: pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
+            for (final s in satirlar) ...[t(s), pw.SizedBox(height: 3)],
+            pw.SizedBox(height: 28),
+          ]),
+        ),
+      );
+
+  doc.addPage(
+    pw.MultiPage(
+      pageFormat: PdfPageFormat.a4,
+      margin: const pw.EdgeInsets.fromLTRB(56, 48, 56, 48),
+      build: (ctx) => [
+        pw.Center(child: t(d.baslik, kalin: true, boyut: 13)),
+        pw.SizedBox(height: 22),
+        t(d.makam, kalin: true),
+        pw.SizedBox(height: 4),
+        pw.Align(alignment: pw.Alignment.centerRight, child: t('Tarih: ${_tarih(d.baslangic)}')),
+        pw.SizedBox(height: 14),
+        for (final (e, v) in d.bilgiSatirlari) satir(e, v),
+        pw.SizedBox(height: 16),
+        t(d.girisCumlesi, hiza: pw.TextAlign.justify),
+        pw.SizedBox(height: 8),
+        t(d.talepCumlesi, hiza: pw.TextAlign.justify),
+        pw.SizedBox(height: 8),
+        t('    Gereğini bilgilerinize arz ederim.'),
+        pw.SizedBox(height: 16),
+        imza(['Saygılarımla,', d.adSoyadBuyuk, 'İmza']),
+        pw.Divider(thickness: 0.7),
+        pw.SizedBox(height: 8),
+        pw.Center(child: t('İŞVEREN ONAYI', kalin: true)),
+        pw.SizedBox(height: 8),
+        t(d.onayMetni, hiza: pw.TextAlign.justify),
+        pw.SizedBox(height: 16),
+        imza(['Adı Soyadı / Kaşe', 'İmza']),
+      ],
+    ),
+  );
+  return doc.save();
+}
+
+Uint8List _dilekceDocx(UcretsizIzinDilekcesi d) {
+  final g = StringBuffer()
+    ..write(_dp(d.baslik, kalin: true, hiza: 'center', boyut: 24))
+    ..write(_dp(''))
+    ..write(_dp(d.makam, kalin: true))
+    ..write(_dp('Tarih: ${_tarih(d.baslangic)}', hiza: 'right'))
+    ..write(_dp(''))
+    ..write(_dtablo(d.bilgiSatirlari))
+    ..write(_dp(''))
+    ..write(_dp(d.girisCumlesi, hiza: 'both'))
+    ..write(_dp(d.talepCumlesi, hiza: 'both'))
+    ..write(_dp('    Gereğini bilgilerinize arz ederim.'))
+    ..write(_dp(''))
+    ..write(_dp('Saygılarımla,', hiza: 'right'))
+    ..write(_dp(d.adSoyadBuyuk, hiza: 'right'))
+    ..write(_dp('İmza', hiza: 'right'))
+    ..write(_dp(''))
+    ..write(_dp('İŞVEREN ONAYI', kalin: true, hiza: 'center'))
+    ..write(_dp(d.onayMetni, hiza: 'both'))
+    ..write(_dp(''))
+    ..write(_dp('Adı Soyadı / Kaşe', hiza: 'right'))
+    ..write(_dp('İmza', hiza: 'right'));
+  final belge = '$_xmlBas<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>'
+      '$g<w:sectPr><w:pgSz w:w="11906" w:h="16838"/>'
+      '<w:pgMar w:top="720" w:right="1000" w:bottom="720" w:left="1000" w:header="708" w:footer="708" w:gutter="0"/>'
+      '</w:sectPr></w:body></w:document>';
+  return _zip({
+    '[Content_Types].xml': _docxTipler,
+    '_rels/.rels': _docxKok,
+    'word/document.xml': belge,
+  });
+}
+
+Uint8List _dilekceXlsx(UcretsizIzinDilekcesi d) {
+  final sat = StringBuffer();
+  final birlestir = <String>[];
+  var r = 0;
+
+  String h(String ref, String metin, int stil) => metin.isEmpty
+      ? '<c r="$ref" s="$stil"/>'
+      : '<c r="$ref" s="$stil" t="inlineStr"><is><t xml:space="preserve">${_x(metin)}</t></is></c>';
+
+  void satir(String icerik, {double? yukseklik}) {
+    r++;
+    sat.write('<row r="$r"${yukseklik == null ? '' : ' ht="$yukseklik" customHeight="1"'}>$icerik</row>');
+  }
+
+  void bos() => satir('');
+  void birlesik(String metin, int stil, {double? yukseklik}) {
+    satir(h('A${r + 1}', metin, stil) + h('B${r + 1}', '', stil) + h('C${r + 1}', '', stil), yukseklik: yukseklik);
+    birlestir.add('A$r:C$r');
+  }
+
+  void alan(String e, String v) => satir(h('A${r + 1}', e, 0) + h('B${r + 1}', ':', 0) + h('C${r + 1}', v, 2));
+  void sag(String m) => satir(h('C${r + 1}', m, 0));
+  double boy(String m) => 16.0 * (m.length / 78).ceil().clamp(1, 20);
+
+  birlesik(d.baslik, 1);
+  bos();
+  birlesik(d.makam, 4);
+  birlesik('Tarih: ${_tarih(d.baslangic)}', 0);
+  bos();
+  for (final (e, v) in d.bilgiSatirlari) {
+    alan(e, v);
+  }
+  bos();
+  birlesik(d.girisCumlesi.trimLeft(), 3, yukseklik: boy(d.girisCumlesi));
+  birlesik(d.talepCumlesi.trimLeft(), 3, yukseklik: boy(d.talepCumlesi));
+  birlesik('Gereğini bilgilerinize arz ederim.', 3);
+  bos();
+  sag('Saygılarımla,');
+  sag(d.adSoyadBuyuk);
+  sag('İmza');
+  bos();
+  bos();
+  birlesik('İŞVEREN ONAYI', 1);
+  birlesik(d.onayMetni, 3, yukseklik: boy(d.onayMetni));
+  bos();
+  sag('Adı Soyadı / Kaşe');
+  sag('İmza');
+
+  final birlesimler = birlestir.map((m) => '<mergeCell ref="$m"/>').join();
+  final sayfa = '$_xmlBas<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+      '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>'
+      '<sheetViews><sheetView showGridLines="0" workbookViewId="0"/></sheetViews>'
+      '<sheetFormatPr defaultRowHeight="16"/>'
+      '<cols><col min="1" max="1" width="40" customWidth="1"/><col min="2" max="2" width="3" customWidth="1"/>'
+      '<col min="3" max="3" width="46" customWidth="1"/></cols>'
+      '<sheetData>$sat</sheetData>'
+      '<mergeCells count="${birlestir.length}">$birlesimler</mergeCells>'
+      '<pageMargins left="0.6" right="0.6" top="0.6" bottom="0.6" header="0.3" footer="0.3"/>'
+      '<pageSetup paperSize="9" orientation="portrait" fitToWidth="1" fitToHeight="1"/>'
+      '</worksheet>';
+
+  return _zip({
+    '[Content_Types].xml': _xlsxTipler,
+    '_rels/.rels': _xlsxKok,
+    'xl/workbook.xml': _xlsxKitap,
+    'xl/_rels/workbook.xml.rels': _xlsxKitapBag,
+    'xl/styles.xml': _xlsxStiller,
+    'xl/worksheets/sheet1.xml': sayfa,
+  });
+}
