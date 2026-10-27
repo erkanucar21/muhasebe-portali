@@ -22,11 +22,14 @@ jobs:
           cache: true
 
       - name: Supabase ayar dosyası
+        env:
+          SB_URL: ${{ vars.SUPABASE_URL }}
+          SB_KEY: ${{ vars.SUPABASE_ANON_KEY }}
         run: |
-          cat > lib/ayarlar.dart <<'EOF'
-          const supabaseUrl = '${{ vars.SUPABASE_URL }}';
-          const supabaseAnonKey = '${{ vars.SUPABASE_ANON_KEY }}';
-          EOF
+          url=$(printf '%s' "$SB_URL" | tr -d '[:space:]"'"'")
+          key=$(printf '%s' "$SB_KEY" | tr -d '[:space:]"'"'")
+          printf "const supabaseUrl = '%s';\nconst supabaseAnonKey = '%s';\n" "$url" "$key" > lib/ayarlar.dart
+          echo "URL uzunluğu: ${#url}, anahtar uzunluğu: ${#key}"
 
       - name: Paketler
         run: flutter pub get
