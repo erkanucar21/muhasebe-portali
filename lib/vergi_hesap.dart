@@ -2194,7 +2194,7 @@ class _VergiHesapSayfasiState extends State<VergiHesapSayfasi> {
         if (istisna > 0) ('Yıllık istisna tutarı', '-${tl(istisna > kazanc ? (kazanc > 0 ? kazanc : 0) : istisna)}'),
         ('Vergiye tabi matrah', tl(muaf || kazanc <= 0 ? 0 : matrah)),
         if (diger > 0) ('Diğer gelirlerin matrahı (tarife başlangıcı)', tl(diger)),
-        if (muaf) ('Elde tutma süresi girilen süreyi (${_yz(sure!)} yıl) doldurduğu için vergi dışı görünüyor', ''),
+        if (muaf) ('Elde tutma süresi girilen süreyi (${_yz(sure)} yıl) doldurduğu için vergi dışı görünüyor', ''),
         ('>Hesaplanan gelir vergisi', tl(vergi)),
       ], 'deger_artis_kazanci_$_daYil', 'Değer artış kazancı $_daYil');
     }

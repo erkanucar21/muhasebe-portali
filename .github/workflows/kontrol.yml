@@ -32,7 +32,24 @@ jobs:
         run: flutter pub get
 
       - name: Hata taraması (yalnızca hatalar başarısızlık sayılır)
-        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+        run: |
+          set +e
+          flutter analyze lib --no-fatal-infos --no-fatal-warnings > analiz.txt 2>&1
+          kod=$?
+          cat analiz.txt
+          {
+            echo '### Hata taraması'
+            echo "Sonuç kodu: $kod"
+            echo '#### Hatalar'
+            echo '```'
+            grep -E '^ *error' analiz.txt | head -200
+            echo '```'
+            echo '#### Uyarılar'
+            echo '```'
+            grep -E '^ *warning' analiz.txt | head -100
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $kod
 
       - name: Web derlemesi
         run: flutter build web --release

@@ -7,7 +7,6 @@ import 'ayarlar.dart';
 import 'hesap_islem.dart';
 import 'firmalar.dart';
 import 'main.dart';
-import 'ekip.dart';
 
 class KullanicilarSayfasi extends StatefulWidget {
   const KullanicilarSayfasi({super.key});
@@ -228,16 +227,6 @@ class _KullanicilarSayfasiState extends State<KullanicilarSayfasi> {
 
   @override
   Widget build(BuildContext context) {
-    return DefaultTabController(
-      length: 2,
-      child: Column(children: [
-        const TabBar(isScrollable: true, tabs: [Tab(text: 'Kullanıcılar'), Tab(text: 'Ekip ve onaylar')]),
-        Expanded(child: TabBarView(children: [_kullaniciListesi(), const EkipSayfasi(yonetici: true)])),
-      ]),
-    );
-  }
-
-  Widget _kullaniciListesi() {
     return Scaffold(
       backgroundColor: Colors.transparent,
       floatingActionButton: FloatingActionButton.extended(
